@@ -1,4 +1,4 @@
-"""Робоче місце Unity-розробника JarLight: база знань (ЛР 2) + МАС етапу Конструювання (ЛР 3).
+"""Вебінтерфейс робочого місця Unity-розробника JarLight (ЛР 2 + ЛР 3 у Streamlit).
 
 Запуск: uv run streamlit run streamlit_app.py
 """
@@ -9,11 +9,11 @@ import pandas as pd
 import streamlit as st
 
 from workbench.exporters import to_bundle_zip
-from workbench.service import WorkbenchService, build_service
+from workbench.service import TeamRun, WorkbenchService, build_service
 
 MAX_TEAM_RUNS = 10
 
-NODE_PROGRESS = {
+STAGE_PROGRESS = {
     "intake_task": 0.10,
     "retrieve_context": 0.20,
     "feature_architect": 0.35,
@@ -29,7 +29,7 @@ NODE_PROGRESS = {
     "reject": 1.00,
 }
 
-NODE_LABELS = {
+STAGE_TITLES = {
     "intake_task": "Валідація GDD-задачі",
     "retrieve_context": "Пошук правил оптики та ECS у БЗ",
     "feature_architect": "Оцінка вимог і формування плану",
@@ -45,23 +45,17 @@ NODE_LABELS = {
     "reject": "Відхилення некоректного запиту",
 }
 
-st.set_page_config(
-    page_title="Робоче місце розробника JarLight",
-    page_icon="💡",
-    layout="wide",
-)
-
 
 @st.cache_resource
-def cached_service() -> WorkbenchService:
+def _cached_service() -> WorkbenchService:
     return build_service()
 
 
-def get_service() -> WorkbenchService | None:
+def _resolve_service() -> WorkbenchService | None:
     if "service" in st.session_state:
         return st.session_state["service"]
     try:
-        return cached_service()
+        return _cached_service()
     except Exception as exc:
         st.error(f"Не вдалося запустити сервіс: {exc}")
         st.info(
@@ -71,173 +65,211 @@ def get_service() -> WorkbenchService | None:
         return None
 
 
-service = get_service()
-if service is None:
-    st.stop()
-
-state = st.session_state
-state.setdefault("messages", [])
-state.setdefault("team_runs", 0)
-
-tab_ask, tab_team, tab_history = st.tabs(
-    ["Питання до бази знань", "Команда агентів", "Історія і метрики"]
-)
-
-# ------------------------------------------------------------------ Вкладка 1: БЗ
-with tab_ask:
-    for message in state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+def _render_kb_tab(svc: WorkbenchService) -> None:
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
     question = st.chat_input(
         "Запитайте про оптику RGB, призми, Par Moves, кристали або Unity ECS JarLight"
     )
-    if question:
-        state.messages.append({"role": "user", "content": question})
-        with st.status("Агент шукає в базі знань JarLight…", expanded=False) as status:
-            def log_kb(event: dict) -> None:
-                if event["author"] != "user" and event["text"]:
-                    status.write(f"{event['author']}: {event['text'][:90]}")
+    if not question:
+        return
 
-            answer = service.ask(question, on_event=log_kb)
-            status.update(label="Відповідь готова", state="complete")
+    st.session_state.messages.append({"role": "user", "content": question})
+    with st.status("Агент шукає в базі знань JarLight…", expanded=False) as status:
+        def _log_kb(event: dict) -> None:
+            if event["author"] != "user" and event["text"]:
+                status.write(f"{event['author']}: {event['text'][:90]}")
 
-        sources_md = "\n".join(f"- [{s['label']}]({s['url']})" for s in answer.sources)
-        content = answer.linked_text + (
-            f"\n\n**Фрагменти, знайдені агентом:**\n{sources_md}" if sources_md else ""
+        answer = svc.ask(question, on_event=_log_kb)
+        status.update(label="Відповідь готова", state="complete")
+
+    links_block = "\n".join(f"- [{src['label']}]({src['url']})" for src in answer.sources)
+    rendered = answer.linked_text
+    if links_block:
+        rendered += f"\n\n**Фрагменти, знайдені агентом:**\n{links_block}"
+    if answer.invalid_citations:
+        rendered += "\n\n:warning: Посилання без підтвердження: " + ", ".join(
+            answer.invalid_citations
         )
-        if answer.invalid_citations:
-            content += (
-                "\n\n:warning: Посилання без підтвердження: "
-                + ", ".join(answer.invalid_citations)
-            )
-        state.messages.append({"role": "assistant", "content": content})
-        st.rerun()
+    st.session_state.messages.append({"role": "assistant", "content": rendered})
+    st.rerun()
 
-# ------------------------------------------------------------- Вкладка 2: Команда
-with tab_team:
+
+def _render_exports_and_hitl(svc: WorkbenchService, run: TeamRun) -> None:
+    metrics = st.columns(4)
+    metrics[0].metric("Чернеток", run.result.state.get("drafts", "—"))
+    metrics[1].metric("Викликів LLM", sum(run.result.llm_calls.values()))
+    metrics[2].metric("Токенів", run.result.tokens)
+    metrics[3].metric("Час, с", run.result.seconds)
+
+    st.markdown(run.report)
+
+    if run.nunit_tests or run.preset_json:
+        with st.expander("Попередній перегляд експорту Unity (NUnit C# і JSON-пресет)"):
+            if run.nunit_tests:
+                st.code(run.nunit_tests, language="csharp")
+            if run.preset_json:
+                st.code(run.preset_json, language="json")
+
+    slug = run.task_key.lower()
+    col_pr, col_cs, col_json, col_zip = st.columns(4)
+    col_pr.download_button(
+        "Завантажити draft_pr.md",
+        run.pr_md,
+        file_name=f"{slug}_draft_pr.md",
+    )
+    if run.nunit_tests:
+        col_cs.download_button(
+            "Завантажити FeatureTests.cs",
+            run.nunit_tests,
+            file_name=f"{slug}_FeatureTests.cs",
+        )
+    if run.preset_json:
+        col_json.download_button(
+            "Завантажити level_preset.json",
+            run.preset_json,
+            file_name=f"{slug}_preset.json",
+        )
+    col_zip.download_button(
+        "Завантажити все (ZIP)",
+        to_bundle_zip(slug, run.pr_md, run.nunit_tests, run.preset_json),
+        file_name=f"{slug}_bundle.zip",
+        mime="application/zip",
+    )
+
+    st.subheader("Перевірка людиною (Human-in-the-loop)")
+    reviewer = st.text_input("Ваше ім'я (рецензент)")
+    confirmed = st.checkbox(
+        "Я перевірив план, C# ECS код, JSON-пресет, NUnit тести та результати рев'ю"
+    )
+    if st.button(
+        "Зберегти в Obsidian (Inbox)",
+        disabled=not (confirmed and reviewer.strip()),
+    ):
+        saved_path = svc.save_result(run, reviewer)
+        st.success(
+            f"Збережено в Inbox: {saved_path.name}. Переіндексуйте базу знань за потреби."
+        )
+
+    rating = st.feedback("thumbs", key=f"rate_{run.run_id}")
+    if rating is not None:
+        svc.rate(run.run_id, positive=bool(rating))
+
+
+def _render_team_tab(svc: WorkbenchService) -> None:
+    session = st.session_state
     with st.form("team_form"):
-        request = st.text_area(
+        task_text = st.text_area(
             "Опис GDD-задачі для етапу Конструювання",
             height=120,
             placeholder=(
                 "JL-24: Реалізувати елемент PrismSplitter у Unity ECS/Burst: розщеплення білого "
-                "променя на R, G, B під кутом 60 град., ліміт max_bounces=8, JSON-пресет рівня (Par Moves <= 7) та NUnit тести."
+                "променя на R, G, B під кутом 60 град., ліміт max_bounces=8, JSON-пресет рівня "
+                "(Par Moves <= 7) та NUnit тести."
             ),
         )
         submitted = st.form_submit_button(
             "Запустити команду",
-            disabled=state.team_runs >= MAX_TEAM_RUNS,
+            disabled=session.team_runs >= MAX_TEAM_RUNS,
         )
 
-    if submitted and request.strip():
-        state.team_runs += 1
+    if submitted and task_text.strip():
+        session.team_runs += 1
         with st.status("Команда агентів працює (орієнтовно 20–50 с)…", expanded=True) as status:
-            progress_bar = st.progress(0.0, text="Ініціалізація конвеєра…")
+            progress = st.progress(0.0, text="Ініціалізація конвеєра…")
 
-            def show_step(event: dict) -> None:
-                base = event["node"].split("@")[0]
-                if base in NODE_LABELS:
-                    route = f" → {event['route']}" if event["route"] else ""
-                    elapsed = f"[{event['t']:.1f} с] " if "t" in event else ""
-                    label = NODE_LABELS[base]
-                    progress_bar.progress(
-                        NODE_PROGRESS.get(base, 0.5),
-                        text=f"{elapsed}{label}",
-                    )
-                    status.write(f"{elapsed}{label}{route}")
+            def _on_step(event: dict) -> None:
+                node_name = event["node"].split("@")[0]
+                if node_name not in STAGE_TITLES:
+                    return
+                route_suffix = f" → {event['route']}" if event["route"] else ""
+                elapsed_prefix = f"[{event['t']:.1f} с] " if "t" in event else ""
+                step_title = STAGE_TITLES[node_name]
+                progress.progress(
+                    STAGE_PROGRESS.get(node_name, 0.5),
+                    text=f"{elapsed_prefix}{step_title}",
+                )
+                status.write(f"{elapsed_prefix}{step_title}{route_suffix}")
 
-            state.last_run = service.run_team(request.strip(), on_event=show_step)
-            progress_bar.progress(1.0, text="Завершено")
+            session.last_run = svc.run_team(task_text.strip(), on_event=_on_step)
+            progress.progress(1.0, text="Завершено")
             status.update(label="Готово", state="complete", expanded=False)
 
-    run = state.get("last_run")
-    if run:
-        cols = st.columns(4)
-        cols[0].metric("Чернеток", run.result.state.get("drafts", "—"))
-        cols[1].metric("Викликів LLM", sum(run.result.llm_calls.values()))
-        cols[2].metric("Токенів", run.result.tokens)
-        cols[3].metric("Час, с", run.result.seconds)
+    last_run = session.get("last_run")
+    if last_run is not None:
+        _render_exports_and_hitl(svc, last_run)
 
-        st.markdown(run.report)
 
-        if run.nunit_tests or run.preset_json:
-            with st.expander("Попередній перегляд експорту Unity (NUnit C# і JSON-пресет)"):
-                if run.nunit_tests:
-                    st.code(run.nunit_tests, language="csharp")
-                if run.preset_json:
-                    st.code(run.preset_json, language="json")
+def _render_history_tab(svc: WorkbenchService) -> None:
+    stats = svc.history.summary()
+    cards = st.columns(4)
+    cards[0].metric("Запусків", stats["runs"] or 0)
+    cards[1].metric("Сер. викликів LLM", round(stats["avg_calls"] or 0, 1))
+    cards[2].metric("Сер. час, с", round(stats["avg_seconds"] or 0, 1))
+    share = stats["positive_share"]
+    cards[3].metric("Позитивних оцінок", "—" if share is None else f"{share:.0%}")
 
-        c1, c2, c3, c4 = st.columns(4)
-        slug_key = run.task_key.lower()
-        c1.download_button(
-            "Завантажити draft_pr.md",
-            run.pr_md,
-            file_name=f"{slug_key}_draft_pr.md",
-        )
-        if run.nunit_tests:
-            c2.download_button(
-                "Завантажити FeatureTests.cs",
-                run.nunit_tests,
-                file_name=f"{slug_key}_FeatureTests.cs",
-            )
-        if run.preset_json:
-            c3.download_button(
-                "Завантажити level_preset.json",
-                run.preset_json,
-                file_name=f"{slug_key}_preset.json",
-            )
-        c4.download_button(
-            "Завантажити все (ZIP)",
-            to_bundle_zip(slug_key, run.pr_md, run.nunit_tests, run.preset_json),
-            file_name=f"{slug_key}_bundle.zip",
-            mime="application/zip",
-        )
-
-        st.subheader("Перевірка людиною (Human-in-the-loop)")
-        reviewer = st.text_input("Ваше ім'я (рецензент)")
-        confirmed = st.checkbox(
-            "Я перевірив план, C# ECS код, JSON-пресет, NUnit тести та результати рев'ю"
-        )
-        if st.button(
-            "Зберегти в Obsidian (Inbox)",
-            disabled=not (confirmed and reviewer.strip()),
-        ):
-            saved_path = service.save_result(run, reviewer)
-            st.success(f"Збережено в Inbox: {saved_path.name}. Переіндексуйте базу знань за потреби.")
-
-        rating = st.feedback("thumbs", key=f"rate_{run.run_id}")
-        if rating is not None:
-            service.rate(run.run_id, positive=bool(rating))
-
-# ------------------------------------------------------------- Вкладка 3: Історія
-with tab_history:
-    summary = service.history.summary()
-    mcols = st.columns(4)
-    mcols[0].metric("Запусків", summary["runs"] or 0)
-    mcols[1].metric("Сер. викликів LLM", round(summary["avg_calls"] or 0, 1))
-    mcols[2].metric("Сер. час, с", round(summary["avg_seconds"] or 0, 1))
-    share = summary["positive_share"]
-    mcols[3].metric("Позитивних оцінок", "—" if share is None else f"{share:.0%}")
-
-    rows = service.history.list()
-    if rows:
-        frame = pd.DataFrame(rows)
-        st.dataframe(frame, hide_index=True)
-        st.caption(
-            "Примітка: колонка saved_path заповнюється після підтвердження збереження в Obsidian (Inbox)."
-        )
-        st.download_button(
-            "Експорт CSV",
-            frame.to_csv(index=False),
-            file_name="runs.csv",
-            mime="text/csv",
-        )
-    else:
+    filter_choice = st.selectbox(
+        "Фільтр за типом запуску",
+        options=["Усі", "ask", "team"],
+        index=0,
+    )
+    kind_filter = None if filter_choice == "Усі" else filter_choice
+    rows = svc.history.list(kind=kind_filter)
+    if not rows:
         st.caption("Запусків ще немає.")
+        return
 
-with st.sidebar:
-    st.header("Робоче місце розробника")
-    st.caption("Етап ЖЦ ПЗ: 4 — Конструювання (JarLight Unity)")
-    st.metric("Запусків команди в сесії", f"{state.team_runs} / {MAX_TEAM_RUNS}")
-    st.caption(f"Сховище Obsidian: {service.vault_name or 'не налаштовано'}")
+    frame = pd.DataFrame(rows)
+    st.dataframe(frame, hide_index=True)
+    st.caption(
+        "Примітка: колонка saved_path заповнюється після підтвердження збереження в Obsidian (Inbox)."
+    )
+    st.download_button(
+        "Експорт CSV",
+        frame.to_csv(index=False),
+        file_name="runs.csv",
+        mime="text/csv",
+    )
+
+
+def _render_sidebar(svc: WorkbenchService) -> None:
+    with st.sidebar:
+        st.header("Робоче місце розробника")
+        st.caption("Етап ЖЦ ПЗ: 4 — Конструювання (JarLight Unity)")
+        st.metric("Запусків команди в сесії", f"{st.session_state.team_runs} / {MAX_TEAM_RUNS}")
+        st.caption(f"Сховище Obsidian: {svc.vault_name or 'не налаштовано'}")
+        st.divider()
+        st.caption("Ключові інваріанти JarLight:")
+        st.markdown("- `max_bounces = 8` (призми)\n- Спектр RGB: `60°`\n- Гекса-сітка + `BurstCompile`")
+
+
+def main() -> None:
+    st.set_page_config(
+        page_title="Робоче місце розробника JarLight",
+        page_icon="💡",
+        layout="wide",
+    )
+    svc = _resolve_service()
+    if svc is None:
+        st.stop()
+
+    st.session_state.setdefault("messages", [])
+    st.session_state.setdefault("team_runs", 0)
+
+    tab_ask, tab_team, tab_history = st.tabs(
+        ["Питання до бази знань", "Команда агентів", "Історія і метрики"]
+    )
+    with tab_ask:
+        _render_kb_tab(svc)
+    with tab_team:
+        _render_team_tab(svc)
+    with tab_history:
+        _render_history_tab(svc)
+
+    _render_sidebar(svc)
+
+
+main()
