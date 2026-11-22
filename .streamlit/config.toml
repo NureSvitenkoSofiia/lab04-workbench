@@ -1,0 +1,10 @@
+[browser]
+gatherUsageStats = false
+
+[server]
+headless = true
+address = "localhost"
+maxUploadSize = 5
+
+[client]
+toolbarMode = "viewer"

@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+workbench.db
+*.db
+.adk/
+app/.adk/
+eval/real_runs.csv
