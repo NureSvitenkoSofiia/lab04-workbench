@@ -8,9 +8,26 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from workbench.exporters import to_bundle_zip
 from workbench.service import WorkbenchService, build_service
 
 MAX_TEAM_RUNS = 10
+
+NODE_PROGRESS = {
+    "intake_task": 0.10,
+    "retrieve_context": 0.20,
+    "feature_architect": 0.35,
+    "readiness_gate": 0.45,
+    "unity_implementer": 0.65,
+    "unity_policy_lint": 0.75,
+    "game_balance_reviewer": 0.85,
+    "unity_ecs_qa_reviewer": 0.85,
+    "reviews": 0.90,
+    "pr_gate": 0.95,
+    "build_feature_pr": 1.00,
+    "build_clarification_report": 1.00,
+    "reject": 1.00,
+}
 
 NODE_LABELS = {
     "intake_task": "Валідація GDD-задачі",
@@ -116,14 +133,22 @@ with tab_team:
     if submitted and request.strip():
         state.team_runs += 1
         with st.status("Команда агентів працює (орієнтовно 20–50 с)…", expanded=True) as status:
+            progress_bar = st.progress(0.0, text="Ініціалізація конвеєра…")
+
             def show_step(event: dict) -> None:
                 base = event["node"].split("@")[0]
                 if base in NODE_LABELS:
                     route = f" → {event['route']}" if event["route"] else ""
                     elapsed = f"[{event['t']:.1f} с] " if "t" in event else ""
-                    status.write(f"{elapsed}{NODE_LABELS[base]}{route}")
+                    label = NODE_LABELS[base]
+                    progress_bar.progress(
+                        NODE_PROGRESS.get(base, 0.5),
+                        text=f"{elapsed}{label}",
+                    )
+                    status.write(f"{elapsed}{label}{route}")
 
             state.last_run = service.run_team(request.strip(), on_event=show_step)
+            progress_bar.progress(1.0, text="Завершено")
             status.update(label="Готово", state="complete", expanded=False)
 
     run = state.get("last_run")
@@ -143,7 +168,7 @@ with tab_team:
                 if run.preset_json:
                     st.code(run.preset_json, language="json")
 
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         slug_key = run.task_key.lower()
         c1.download_button(
             "Завантажити draft_pr.md",
@@ -162,6 +187,12 @@ with tab_team:
                 run.preset_json,
                 file_name=f"{slug_key}_preset.json",
             )
+        c4.download_button(
+            "Завантажити все (ZIP)",
+            to_bundle_zip(slug_key, run.pr_md, run.nunit_tests, run.preset_json),
+            file_name=f"{slug_key}_bundle.zip",
+            mime="application/zip",
+        )
 
         st.subheader("Перевірка людиною (Human-in-the-loop)")
         reviewer = st.text_input("Ваше ім'я (рецензент)")

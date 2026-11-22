@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import json
 import re
+import zipfile
 from datetime import date
 from pathlib import Path
 
@@ -84,3 +86,17 @@ def save_to_vault(
         idx += 1
     path.write_text(note_text, encoding="utf-8")
     return path
+
+
+def to_bundle_zip(
+    slug_key: str, pr_md: str, nunit_tests: str = "", preset_json: str = ""
+) -> bytes:
+    """Пакує всі згенеровані артефакти конструювання в єдиний ZIP-архів."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{slug_key}_draft_pr.md", pr_md)
+        if nunit_tests:
+            zf.writestr(f"{slug_key}_FeatureTests.cs", nunit_tests)
+        if preset_json:
+            zf.writestr(f"{slug_key}_preset.json", preset_json)
+    return buf.getvalue()
