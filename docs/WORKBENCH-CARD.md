@@ -1,5 +1,10 @@
 # WORKBENCH-CARD: Робоче місце Unity-розробника JarLight
 
+## Ідентифікація
+- **Автор:** Світенко Софія Миколаївна, група ПЗПІ-23-3, `sofiia.svitenko@nure.ua`
+- **Репозиторій GitHub:** https://github.com/NureSvitenkoSofiia/lab04-workbench
+- **Посилання на архів:** https://drive.google.com/drive/folders/1k8GXOSL3zOE6G7XA6qtZOdR0EipGEnlV
+
 ## 1. Мета й аудиторія
 - **Етап ЖЦ ПЗ:** 4 — Конструювання ПЗ (*Implementation / Construction*).
 - **Роль користувача:** Unity C# розробник 2D-головоломки **«JarLight»** (Unity ECS / Burst, `ScriptableObjects`, `EventBus`, гексагональна сітка, оптичні закони Снелла й спектр RGB).
